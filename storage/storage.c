@@ -17,6 +17,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "storage.h"
+
 #include <assert.h>
 #include <string.h>
 
@@ -28,7 +30,10 @@
 #include "pbkdf2.h"
 #include "rand.h"
 #include "sha2.h"
-#include "storage.h"
+
+#if USE_SE
+#include "se_chip.h"
+#endif
 
 #define LOW_MASK 0x55555555
 
@@ -59,6 +64,10 @@
 
 #define APP_PIN (0x01 << 8)
 #define PIN_PUBLIC_SHIFTED (FLAG_PUBLIC << 8)
+
+#define KEY_PIN (20 | APP_PIN)        // uint32
+#define KEY_PINFLAG (21 | APP_PIN)    // uint32
+#define KEY_VERIFYPIN (22 | APP_PIN)  // uint32
 
 // The PIN value corresponding to an invalid PIN.
 #define PIN_INVALID 0
@@ -142,10 +151,14 @@
 #define GUARD_KEY_MODULUS 6311
 #define GUARD_KEY_REMAINDER 15
 
-const char *const VERIFYING_PIN_MSG = "Verifying PIN";
-const char *const PROCESSING_MSG = "Processing";
-const char *const STARTING_MSG = "Starting up";
+const char *VERIFYING_PIN_MSG[2] = {"Verifying PIN", "校验 PIN"};
+const char *PROCESSING_MSG[2] = {"Processing", "处理中..."};
+const char *STARTING_MSG[2] = {"Starting up", "启动中..."};
 
+#ifdef TREZOR_MODEL
+static uint8_t ui_language = 0;
+static bool g_bSelectSEFlag = false;
+#endif
 static secbool initialized = secfalse;
 static secbool unlocked = secfalse;
 static PIN_UI_WAIT_CALLBACK ui_callback = NULL;
@@ -497,43 +510,56 @@ static void derive_kek(uint32_t pin, const uint8_t *random_salt,
 }
 
 static secbool set_pin(uint32_t pin, const uint8_t *ext_salt) {
-  // Fail if the PIN is the same as the wipe code. Ignore during upgrade.
-  if (norcow_active_version != 0 && sectrue != is_not_wipe_code(pin)) {
-    memzero(&pin, sizeof(pin));
-    return secfalse;
-  }
-
-  // Encrypt the cached keys using the new PIN and set the new PVC.
-  uint8_t buffer[RANDOM_SALT_SIZE + KEYS_SIZE + POLY1305_TAG_SIZE] = {0};
-  uint8_t *rand_salt = buffer;
-  uint8_t *ekeys = buffer + RANDOM_SALT_SIZE;
-  uint8_t *pvc = buffer + RANDOM_SALT_SIZE + KEYS_SIZE;
-
-  uint8_t kek[SHA256_DIGEST_LENGTH] = {0};
-  uint8_t keiv[SHA256_DIGEST_LENGTH] = {0};
-  chacha20poly1305_ctx ctx = {0};
-  random_buffer(rand_salt, RANDOM_SALT_SIZE);
-  derive_kek(pin, rand_salt, ext_salt, kek, keiv);
-  rfc7539_init(&ctx, kek, keiv);
-  memzero(kek, sizeof(kek));
-  memzero(keiv, sizeof(keiv));
-  chacha20poly1305_encrypt(&ctx, cached_keys, ekeys, KEYS_SIZE);
-  rfc7539_finish(&ctx, 0, KEYS_SIZE, pvc);
-  memzero(&ctx, sizeof(ctx));
-  secbool ret =
-      norcow_set(EDEK_PVC_KEY, buffer, RANDOM_SALT_SIZE + KEYS_SIZE + PVC_SIZE);
-  memzero(buffer, sizeof(buffer));
-
-  if (ret == sectrue) {
-    if (pin == PIN_EMPTY) {
-      ret = norcow_set(PIN_NOT_SET_KEY, &TRUE_BYTE, sizeof(TRUE_BYTE));
-    } else {
-      ret = norcow_set(PIN_NOT_SET_KEY, &FALSE_BYTE, sizeof(FALSE_BYTE));
+  if (!g_bSelectSEFlag) {
+    // Fail if the PIN is the same as the wipe code. Ignore during upgrade.
+    if (norcow_active_version != 0 && sectrue != is_not_wipe_code(pin)) {
+      memzero(&pin, sizeof(pin));
+      return secfalse;
     }
-  }
 
-  memzero(&pin, sizeof(pin));
-  return ret;
+    // Encrypt the cached keys using the new PIN and set the new PVC.
+    uint8_t buffer[RANDOM_SALT_SIZE + KEYS_SIZE + POLY1305_TAG_SIZE] = {0};
+    uint8_t *rand_salt = buffer;
+    uint8_t *ekeys = buffer + RANDOM_SALT_SIZE;
+    uint8_t *pvc = buffer + RANDOM_SALT_SIZE + KEYS_SIZE;
+
+    uint8_t kek[SHA256_DIGEST_LENGTH] = {0};
+    uint8_t keiv[SHA256_DIGEST_LENGTH] = {0};
+    chacha20poly1305_ctx ctx = {0};
+    random_buffer(rand_salt, RANDOM_SALT_SIZE);
+    derive_kek(pin, rand_salt, ext_salt, kek, keiv);
+    rfc7539_init(&ctx, kek, keiv);
+    memzero(kek, sizeof(kek));
+    memzero(keiv, sizeof(keiv));
+    chacha20poly1305_encrypt(&ctx, cached_keys, ekeys, KEYS_SIZE);
+    rfc7539_finish(&ctx, 0, KEYS_SIZE, pvc);
+    memzero(&ctx, sizeof(ctx));
+    secbool ret = norcow_set(EDEK_PVC_KEY, buffer,
+                             RANDOM_SALT_SIZE + KEYS_SIZE + PVC_SIZE);
+    memzero(buffer, sizeof(buffer));
+
+    if (ret == sectrue) {
+      if (pin == PIN_EMPTY) {
+        ret = norcow_set(PIN_NOT_SET_KEY, &TRUE_BYTE, sizeof(TRUE_BYTE));
+      } else {
+        ret = norcow_set(PIN_NOT_SET_KEY, &FALSE_BYTE, sizeof(FALSE_BYTE));
+      }
+    }
+
+    memzero(&pin, sizeof(pin));
+    return ret;
+  } else {
+    secbool ret = secfalse;
+#if USE_SE
+    if (pin != PIN_EMPTY) {
+      ret = storage_set(KEY_PIN, &pin, sizeof(pin));
+    } else {
+      ret = sectrue;
+    }
+    memzero(&pin, sizeof(pin));
+#endif
+    return ret;
+  }
 }
 static secbool check_guard_key(const uint32_t guard_key) {
   if (guard_key % GUARD_KEY_MODULUS != GUARD_KEY_REMAINDER) {
@@ -644,7 +670,7 @@ static void init_wiped_storage(void) {
 
   ui_total = DERIVE_SECS;
   ui_rem = ui_total;
-  ui_message = PROCESSING_MSG;
+  ui_message = PROCESSING_MSG[ui_language];
   ensure(set_pin(PIN_EMPTY, NULL), "init_pin failed");
 }
 
@@ -773,7 +799,7 @@ static uint32_t hamming_weight(uint32_t value) {
   return value & 0x3F;
 }
 
-secbool pin_get_fails(uint32_t *ctr) {
+static secbool pin_get_fails(uint32_t *ctr) {
   *ctr = PIN_MAX_TRIES;
 
   const void *logs = NULL;
@@ -975,7 +1001,7 @@ static secbool unlock(uint32_t pin, const uint8_t *ext_salt) {
                    NULL);
     return secfalse;
   }
-#if EMULATOR
+
   // Sleep for 2^ctr - 1 seconds before checking the PIN.
   uint32_t wait = (1 << ctr) - 1;
   ui_total += wait;
@@ -995,23 +1021,24 @@ static secbool unlock(uint32_t pin, const uint8_t *ext_salt) {
       hal_delay(100);
     }
   }
-#endif
 
   uint8_t kek[SHA256_DIGEST_LENGTH] = {0};
   uint8_t keiv[SHA256_DIGEST_LENGTH] = {0};
-  // Read the random salt from EDEK_PVC_KEY and use it to derive the KEK and
-  // KEIV from the PIN.
-  const void *rand_salt = NULL;
-  uint16_t len = 0;
-  if (sectrue != initialized ||
-      sectrue != norcow_get(EDEK_PVC_KEY, &rand_salt, &len) ||
-      len != RANDOM_SALT_SIZE + KEYS_SIZE + PVC_SIZE) {
+  if (!g_bSelectSEFlag) {
+    // Read the random salt from EDEK_PVC_KEY and use it to derive the KEK and
+    // KEIV from the PIN.
+    const void *rand_salt = NULL;
+    uint16_t len = 0;
+    if (sectrue != initialized ||
+        sectrue != norcow_get(EDEK_PVC_KEY, &rand_salt, &len) ||
+        len != RANDOM_SALT_SIZE + KEYS_SIZE + PVC_SIZE) {
+      memzero(&pin, sizeof(pin));
+      handle_fault("no EDEK");
+      return secfalse;
+    }
+    derive_kek(pin, (const uint8_t *)rand_salt, ext_salt, kek, keiv);
     memzero(&pin, sizeof(pin));
-    handle_fault("no EDEK");
-    return secfalse;
   }
-  derive_kek(pin, (const uint8_t *)rand_salt, ext_salt, kek, keiv);
-  memzero(&pin, sizeof(pin));
 
   // First, we increase PIN fail counter in storage, even before checking the
   // PIN.  If the PIN is correct, we reset the counter afterwards.  If not, we
@@ -1027,7 +1054,11 @@ static secbool unlock(uint32_t pin, const uint8_t *ext_salt) {
     return secfalse;
   }
 
-  pin_verify = decrypt_dek(kek, keiv);
+  if (!g_bSelectSEFlag) {
+    pin_verify = decrypt_dek(kek, keiv);
+  } else {
+    pin_verify = storage_set(KEY_VERIFYPIN, &pin, sizeof(pin));
+  }
   // Check whether the entered PIN is correct.
   if (sectrue != pin_verify) {
     // Wipe storage if too many failures
@@ -1053,13 +1084,13 @@ secbool storage_unlock(uint32_t pin, const uint8_t *ext_salt) {
   ui_rem = ui_total;
   if (pin == PIN_EMPTY) {
     if (ui_message == NULL) {
-      ui_message = STARTING_MSG;
+      ui_message = STARTING_MSG[ui_language];
     } else {
-      ui_message = PROCESSING_MSG;
+      ui_message = PROCESSING_MSG[ui_language];
     }
 
   } else {
-    ui_message = VERIFYING_PIN_MSG;
+    ui_message = VERIFYING_PIN_MSG[ui_language];
   }
   return unlock(pin, ext_salt);
 }
@@ -1115,11 +1146,6 @@ static secbool storage_get_encrypted(const uint16_t key, void *val_dest,
   return sectrue;
 }
 
-secbool storage_has(const uint16_t key) {
-  uint16_t len = 0;
-  return storage_get(key, NULL, 0, &len);
-}
-
 /*
  * Finds the data stored under key and writes its length to len. If val_dest is
  * not NULL and max_len >= len, then the data is copied to val_dest.
@@ -1132,26 +1158,33 @@ secbool storage_get(const uint16_t key, void *val_dest, const uint16_t max_len,
     return secfalse;
   }
 
-  // If the top bit of APP is set, then the value is not encrypted and can be
-  // read from a locked device.
-  if ((app & FLAG_PUBLIC) != 0) {
-    const void *val_stored = NULL;
-    if (sectrue != norcow_get(key, &val_stored, len)) {
-      return secfalse;
-    }
-    if (val_dest == NULL) {
+  if (!g_bSelectSEFlag || app & FLAG_ST) {
+    // If the top bit of APP is set, then the value is not encrypted and can be
+    // read from a locked device.
+    if ((app & FLAG_PUBLIC) != 0) {
+      const void *val_stored = NULL;
+      if (sectrue != norcow_get(key, &val_stored, len)) {
+        return secfalse;
+      }
+      if (val_dest == NULL) {
+        return sectrue;
+      }
+      if (*len > max_len) {
+        return secfalse;
+      }
+      memcpy(val_dest, val_stored, *len);
       return sectrue;
+    } else {
+      if (sectrue != unlocked) {
+        return secfalse;
+      }
+      return storage_get_encrypted(key, val_dest, max_len, len);
     }
-    if (*len > max_len) {
-      return secfalse;
-    }
-    memcpy(val_dest, val_stored, *len);
-    return sectrue;
   } else {
-    if (sectrue != unlocked) {
-      return secfalse;
-    }
-    return storage_get_encrypted(key, val_dest, max_len, len);
+#if USE_SE
+    if (se_get_value(key, val_dest, max_len, len)) return sectrue;
+#endif
+    return secfalse;
   }
 }
 /*
@@ -1215,15 +1248,24 @@ secbool storage_set(const uint16_t key, const void *val, const uint16_t len) {
   if (sectrue != initialized || app == APP_STORAGE) {
     return secfalse;
   }
-  if (sectrue != unlocked && (app & FLAGS_WRITE) != FLAGS_WRITE) {
-    return secfalse;
+  if (!g_bSelectSEFlag || app & FLAG_ST) {
+    if (sectrue != unlocked && (app & FLAGS_WRITE) != FLAGS_WRITE) {
+      return secfalse;
+    }
   }
 
   secbool ret = secfalse;
-  if ((app & FLAG_PUBLIC) != 0) {
-    ret = norcow_set(key, val, len);
+  if (!g_bSelectSEFlag || app & FLAG_ST) {
+    if ((app & FLAG_PUBLIC) != 0) {
+      ret = norcow_set(key, val, len);
+    } else {
+      ret = storage_set_encrypted(key, val, len);
+    }
   } else {
-    ret = storage_set_encrypted(key, val, len);
+#if USE_SE
+    if (se_set_value(key, val, len)) return sectrue;
+    return secfalse;
+#endif
   }
   return ret;
 }
@@ -1239,11 +1281,18 @@ secbool storage_delete(const uint16_t key) {
   if (sectrue != unlocked && (app & FLAGS_WRITE) != FLAGS_WRITE) {
     return secfalse;
   }
-  secbool ret = norcow_delete(key);
-  if (sectrue == ret) {
-    ret = auth_update(key);
+  if (!g_bSelectSEFlag || app & FLAG_ST) {
+    secbool ret = norcow_delete(key);
+    if (sectrue == ret) {
+      ret = auth_update(key);
+    }
+    return ret;
+  } else {
+#if USE_SE
+    if (se_delete_key(key)) return sectrue;
+#endif
+    return secfalse;
   }
-  return ret;
 }
 
 secbool storage_set_counter(const uint16_t key, const uint32_t count) {
@@ -1257,7 +1306,11 @@ secbool storage_set_counter(const uint16_t key, const uint32_t count) {
   uint32_t value[1 + COUNTER_TAIL_WORDS] = {0};
   memset(value, 0xff, sizeof(value));
   value[0] = count;
-  return storage_set(key, value, sizeof(value));
+  if (!g_bSelectSEFlag) {
+    return storage_set(key, value, sizeof(value));
+  } else {
+    return storage_set(key, value, 4);
+  }
 }
 
 secbool storage_next_counter(const uint16_t key, uint32_t *count) {
@@ -1271,29 +1324,38 @@ secbool storage_next_counter(const uint16_t key, uint32_t *count) {
   if (sectrue != unlocked && (app & FLAGS_WRITE) != FLAGS_WRITE) {
     return secfalse;
   }
-  uint16_t len = 0;
-  const uint32_t *val_stored = NULL;
-  if (sectrue != norcow_get(key, (const void **)&val_stored, &len)) {
-    *count = 0;
-    return storage_set_counter(key, 0);
-  }
+  if (!g_bSelectSEFlag) {
+    uint16_t len = 0;
+    const uint32_t *val_stored = NULL;
+    if (sectrue != norcow_get(key, (const void **)&val_stored, &len)) {
+      *count = 0;
+      return storage_set_counter(key, 0);
+    }
 
-  if (len < sizeof(uint32_t) || len % sizeof(uint32_t) != 0) {
-    return secfalse;
-  }
-  uint16_t len_words = len / sizeof(uint32_t);
+    if (len < sizeof(uint32_t) || len % sizeof(uint32_t) != 0) {
+      return secfalse;
+    }
+    uint16_t len_words = len / sizeof(uint32_t);
 
-  uint16_t i = 1;
-  while (i < len_words && val_stored[i] == 0) {
-    ++i;
-  }
+    uint16_t i = 1;
+    while (i < len_words && val_stored[i] == 0) {
+      ++i;
+    }
 
-  *count = val_stored[0] + 1 + 32 * (i - 1);
+    *count = val_stored[0] + 1 + 32 * (i - 1);
 
-  if (i < len_words) {
-    *count += hamming_weight(~val_stored[i]);
-    return norcow_update_word(key, sizeof(uint32_t) * i, val_stored[i] >> 1);
+    if (i < len_words) {
+      *count += hamming_weight(~val_stored[i]);
+      return norcow_update_word(key, sizeof(uint32_t) * i, val_stored[i] >> 1);
+    } else {
+      return storage_set_counter(key, *count);
+    }
   } else {
+    uint16_t len = 0;
+    uint32_t val_stored = 0;
+
+    storage_get(key, (void *)&val_stored, 4, &len);
+    *count = val_stored + 1;
     return storage_set_counter(key, *count);
   }
 }
@@ -1304,10 +1366,18 @@ secbool storage_has_pin(void) {
   }
 
   const void *val = NULL;
+  uint8_t ucval;
   uint16_t len = 0;
-  if (sectrue != norcow_get(PIN_NOT_SET_KEY, &val, &len) ||
-      (len > 0 && *(uint8_t *)val != FALSE_BYTE)) {
-    return secfalse;
+  if (!g_bSelectSEFlag) {
+    if (sectrue != norcow_get(PIN_NOT_SET_KEY, &val, &len) ||
+        (len > 0 && *(uint8_t *)val != FALSE_BYTE)) {
+      return secfalse;
+    }
+  } else {
+    if (sectrue != storage_get(KEY_PINFLAG, &ucval, 1, &len) ||
+        (len > 0 && ucval != FALSE_BYTE)) {
+      return secfalse;
+    }
   }
   return sectrue;
 }
@@ -1334,8 +1404,9 @@ secbool storage_change_pin(uint32_t oldpin, uint32_t newpin,
 
   ui_total = 2 * DERIVE_SECS;
   ui_rem = ui_total;
-  ui_message = (oldpin != PIN_EMPTY && newpin == PIN_EMPTY) ? VERIFYING_PIN_MSG
-                                                            : PROCESSING_MSG;
+  ui_message = (oldpin != PIN_EMPTY && newpin == PIN_EMPTY)
+                   ? VERIFYING_PIN_MSG[ui_language]
+                   : PROCESSING_MSG[ui_language];
 
   if (sectrue != unlock(oldpin, old_ext_salt)) {
     return secfalse;
@@ -1373,8 +1444,9 @@ secbool storage_change_wipe_code(uint32_t pin, const uint8_t *ext_salt,
 
   ui_total = DERIVE_SECS;
   ui_rem = ui_total;
-  ui_message = (pin != PIN_EMPTY && wipe_code == PIN_EMPTY) ? VERIFYING_PIN_MSG
-                                                            : PROCESSING_MSG;
+  ui_message = (pin != PIN_EMPTY && wipe_code == PIN_EMPTY)
+                   ? VERIFYING_PIN_MSG[ui_language]
+                   : PROCESSING_MSG[ui_language];
 
   secbool ret = secfalse;
   if (sectrue == unlock(pin, ext_salt)) {
@@ -1386,11 +1458,13 @@ secbool storage_change_wipe_code(uint32_t pin, const uint8_t *ext_salt,
 }
 
 void storage_wipe(void) {
-  norcow_wipe();
-  norcow_active_version = NORCOW_VERSION;
-  memzero(authentication_sum, sizeof(authentication_sum));
-  memzero(cached_keys, sizeof(cached_keys));
-  init_wiped_storage();
+  if (!g_bSelectSEFlag) {
+    norcow_wipe();
+    norcow_active_version = NORCOW_VERSION;
+    memzero(authentication_sum, sizeof(authentication_sum));
+    memzero(cached_keys, sizeof(cached_keys));
+    init_wiped_storage();
+  }
 }
 static void __handle_fault(const char *msg, const char *file, int line,
                            const char *func) {
@@ -1480,7 +1554,7 @@ static secbool storage_upgrade(void) {
     // Set EDEK_PVC_KEY and PIN_NOT_SET_KEY.
     ui_total = DERIVE_SECS;
     ui_rem = ui_total;
-    ui_message = PROCESSING_MSG;
+    ui_message = PROCESSING_MSG[ui_language];
     if (sectrue == norcow_get(V0_PIN_KEY, &val, &len)) {
       set_pin(*(const uint32_t *)val, NULL);
     } else {

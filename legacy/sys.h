@@ -8,7 +8,7 @@
 #define ST_RAM_END (ST_RAM_START + ST_RAM_LEN)
 
 #ifndef FEITIAN_PCB_V1_3
-#define FEITIAN_PCB_V1_3 1
+#define FEITIAN_PCB_V1_3 0
 #endif
 
 #if !FEITIAN_PCB_V1_3
@@ -35,8 +35,8 @@
 
 #elif FEITIAN_PCB_V1_1
 
-#define USB_INSERT_PORT GPIOC
-#define USB_INSERT_PIN GPIO8
+#define USB_INSERT_PORT GPIOA
+#define USB_INSERT_PIN GPIO9
 
 #define BLE_POWER_CTRL_PORT GPIOA
 #define BLE_POWER_CTRL_PIN GPIO0
@@ -78,6 +78,37 @@
 
 #define ble_power_on() gpio_set(BLE_POWER_CTRL_PORT, BLE_POWER_CTRL_PIN)
 #define ble_power_off() gpio_clear(BLE_POWER_CTRL_PORT, BLE_POWER_CTRL_PIN)
+
+//-------整个电路板上电控制
+
+//飞天大板子适用
+// #define ctl_device_on() gpio_set(GPIOC, GPIO10)
+// #define ctl_device_off() gpio_clear(GPIOC, GPIO10)
+//定制板子适用
+#define ctl_device_on() gpio_set(GPIOC, GPIO12)
+#define ctl_device_off() gpio_clear(GPIOC, GPIO12)
+
+//--------开/关机 取消键
+// #define ctl_device_c_power_on() gpio_set(GPIOC, GPIO3)
+// #define ctl_device_c_power_off() gpio_clear(GPIOC, GPIO3)
+#define ctl_device_c_power_on() gpio_set(GPIOC, GPIO5)
+#define ctl_device_c_power_off() gpio_clear(GPIOC, GPIO5)
+
+//--------向上键
+// #define ctl_device_up_on() gpio_set(GPIOC, GPIO0)
+// #define ctl_device_up_off() gpio_clear(GPIOC, GPIO0)
+#define ctl_device_up_on() gpio_set(GPIOC, GPIO3)
+#define ctl_device_up_off() gpio_clear(GPIOC, GPIO3)
+
+//--------向下键
+// #define ctl_device_down_on() gpio_set(GPIOC, GPIO1)
+// #define ctl_device_down_off() gpio_clear(GPIOC, GPIO1)
+#define ctl_device_down_on() gpio_set(GPIOB, GPIO11)
+#define ctl_device_down_off() gpio_clear(GPIOB, GPIO11)
+
+//--------确认键
+#define ctl_device_ok_on() gpio_set(GPIOC, GPIO2)
+#define ctl_device_ok_off() gpio_clear(GPIOC, GPIO2)
 
 #define se_power_on() (gpio_set(SE_POWER_PORT, SE_POWER_PIN))
 #define se_power_off() (gpio_clear(SE_POWER_PORT, SE_POWER_PIN))

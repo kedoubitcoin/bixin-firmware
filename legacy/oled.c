@@ -17,12 +17,13 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "oled.h"
+
 #include <string.h>
 
 #include "buttons.h"
 #include "common.h"
 #include "memzero.h"
-#include "oled.h"
 #include "prompt.h"
 #include "timer.h"
 #include "util.h"
@@ -125,7 +126,7 @@ static inline void SPISend(uint32_t base, const uint8_t *data, int len) {
 void oledInit() {
   static const uint8_t s[25] = {OLED_DISPLAYOFF,
                                 OLED_SETDISPLAYCLOCKDIV,
-                                0xC0,
+                                0x80,
                                 OLED_SETMULTIPLEX,
                                 0x3F,  // 128x64
                                 OLED_SETDISPLAYOFFSET,
@@ -166,18 +167,6 @@ void oledInit() {
 
   oledClear();
   oledRefresh();
-}
-
-void oledUpdateClk(void) {
-  static const uint8_t s[2] = {OLED_SETDISPLAYCLOCKDIV, 0xC0};
-
-  gpio_clear(OLED_DC_PORT, OLED_DC_PIN);  // set to CMD
-  gpio_set(OLED_CS_PORT, OLED_CS_PIN);    // SPI deselect
-
-  // init
-  gpio_clear(OLED_CS_PORT, OLED_CS_PIN);  // SPI select
-  SPISend(SPI_BASE, s, 2);
-  gpio_set(OLED_CS_PORT, OLED_CS_PIN);  // SPI deselect
 }
 #endif
 
@@ -260,14 +249,6 @@ void oledBufferResume(void) {
   memcpy(_oledbuffer, _oledbuffer_bak, OLED_BUFSIZE);
 }
 
-void oledBufferLoad(uint8_t *buffer) {
-  memcpy(buffer, _oledbuffer, OLED_BUFSIZE);
-}
-
-void oledBufferRestore(uint8_t *buffer) {
-  memcpy(_oledbuffer, buffer, OLED_BUFSIZE);
-}
-
 void oledSetBuffer(uint8_t *buf, uint16_t usLen) {
   memcpy(_oledbuffer, buf, usLen);
 }
@@ -314,7 +295,7 @@ static uint8_t convert_char(const char a) {
   // non-printable ASCII character
   if (c < ' ') {
     last_was_utf8 = 0;
-    return 0x7f;
+    return '_';
   }
 
   // regular ASCII character
@@ -328,7 +309,7 @@ static uint8_t convert_char(const char a) {
   // bytes 11xxxxxx are first bytes of UTF-8 characters
   if (c >= 0xC0) {
     last_was_utf8 = 1;
-    return 0x7f;
+    return '_';
   }
 
   if (last_was_utf8) {
@@ -336,7 +317,7 @@ static uint8_t convert_char(const char a) {
     return 0;  // skip glyph
   } else {
     // ... or they are just non-printable ASCII characters
-    return 0x7f;
+    return '_';
   }
 
   return 0;

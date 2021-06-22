@@ -18,6 +18,8 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "usart.h"
+
 #include <errno.h>
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/stm32/gpio.h>
@@ -27,7 +29,6 @@
 #include <string.h>
 
 #include "ble.h"
-#include "usart.h"
 
 #if (_SUPPORT_DEBUG_UART_)
 /************************************************************************
@@ -123,11 +124,11 @@ void usart_setup(void) {
 
 void ble_usart_init(void) {
   // enable USART clock
-  rcc_periph_clock_enable(RCC_USART2);
+  rcc_periph_clock_enable(RCC_USART3);
   //	set GPIO for USART1
-  rcc_periph_clock_enable(RCC_GPIOA);
-  gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO2 | GPIO3);
-  gpio_set_af(GPIOA, GPIO_AF7, GPIO2 | GPIO3);
+  rcc_periph_clock_enable(RCC_GPIOC);
+  gpio_mode_setup(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO10 | GPIO11);
+  gpio_set_af(GPIOC, GPIO_AF7, GPIO10 | GPIO11);
 
   usart_disable(BLE_UART);
   // usart2 set
@@ -145,8 +146,8 @@ void ble_usart_init(void) {
 
 void ble_usart_irq_set(void) {
   // set NVIC
-  nvic_set_priority(NVIC_USART2_IRQ, 0);
-  nvic_enable_irq(NVIC_USART2_IRQ);
+  nvic_set_priority(NVIC_USART3_IRQ, 0);
+  nvic_enable_irq(NVIC_USART3_IRQ);
   usart_enable_rx_interrupt(BLE_UART);
 }
 
@@ -181,7 +182,7 @@ bool ble_read_byte(uint8_t *buf) {
   return false;
 }
 
-void usart2_isr(void) {
+void usart3_isr(void) {
   if (usart_get_flag(BLE_UART, USART_SR_RXNE) != 0) {
     ble_uart_poll();
   }

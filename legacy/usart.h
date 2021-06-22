@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define _SUPPORT_DEBUG_UART_ 0
+#define _SUPPORT_DEBUG_UART_ 1
 
 #if (_SUPPORT_DEBUG_UART_)
 extern void usart_setup(void);
@@ -12,7 +12,7 @@ extern void vUART_DebugInfo(char *pcMsg, uint8_t *pucSendData,
                             uint16_t usStrLen);
 #endif
 
-#define BLE_UART USART2
+#define BLE_UART USART3
 
 typedef struct _usart_msg {
   uint16_t header;
@@ -22,6 +22,12 @@ typedef struct _usart_msg {
   uint8_t *cmd_vale;
   uint8_t xor ;
 } usart_msg;
+
+typedef struct _usart_test_msg {
+  uint16_t len;
+  uint8_t type;
+  uint8_t cmd;
+} usart_test_msg;
 
 enum {
   VALUE_PREPARE_DFU = 0x01,

@@ -25,6 +25,7 @@
 #include <libopencm3/stm32/rng.h>
 #include <libopencm3/stm32/spi.h>
 
+#include "./segger_rtt/rtt_log.h"
 #include "buttons.h"
 #include "layout.h"
 #include "mi2c.h"
@@ -91,34 +92,29 @@ void setup(void) {
   // enable CSS (Clock Security System)
   RCC_CR |= RCC_CR_CSSON;
 
-  // set GPIO for buttons
-  gpio_mode_setup(BTN_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP,
-                  BTN_PIN_YES | BTN_PIN_UP | BTN_PIN_DOWN);
-  gpio_mode_setup(BTN_PORT_NO, GPIO_MODE_INPUT, GPIO_PUPD_NONE, BTN_PIN_NO);
-
   // set GPIO for usb_insert
   gpio_mode_setup(USB_INSERT_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE,
                   USB_INSERT_PIN);
   // nfc showed
-  gpio_mode_setup(NFC_SHOW_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, NFC_SHOW_PIN);
-  // stm32 power control
-  gpio_mode_setup(STM32_POWER_CTRL_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLDOWN,
-                  STM32_POWER_CTRL_PIN);
+  // gpio_mode_setup(NFC_SHOW_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE,
+  // NFC_SHOW_PIN);
+  // // stm32 power control
+  // gpio_mode_setup(STM32_POWER_CTRL_PORT, GPIO_MODE_OUTPUT,
+  // GPIO_PUPD_PULLDOWN,
+  //                 STM32_POWER_CTRL_PIN);
   // bluetooth power control
-  gpio_mode_setup(BLE_POWER_CTRL_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLDOWN,
-                  BLE_POWER_CTRL_PIN);
+  // gpio_mode_setup(BLE_POWER_CTRL_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLDOWN,
+  //                 BLE_POWER_CTRL_PIN);
   // combus
-  gpio_mode_setup(GPIO_CMBUS_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLDOWN,
-                  GPIO_SI2C_CMBUS);
-  SET_COMBUS_LOW();
-  // bluetooth power control
-  gpio_mode_setup(BLE_CONNECT_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLDOWN,
-                  BLE_CONNECT_PIN);
-  ble_power_off();
+
+  // // bluetooth power control
+  // gpio_mode_setup(BLE_CONNECT_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLDOWN,
+  //                 BLE_CONNECT_PIN);
+  // ble_power_off();
   // se power
-  gpio_mode_setup(SE_POWER_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE,
-                  SE_POWER_PIN);
-  se_power_on();
+  // gpio_mode_setup(SE_POWER_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE,
+  //                 SE_POWER_PIN);
+  // se_power_on();
 
   // set GPIO for OLED display
   gpio_mode_setup(OLED_DC_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, OLED_DC_PIN);
@@ -150,15 +146,33 @@ void setup(void) {
   // clear USB OTG_FS peripheral dedicated RAM
   memset_reg((void *)0x50020000, (void *)0x50020500, 0);
 #if (_SUPPORT_DEBUG_UART_)
-  usart_setup();
+  // usart_setup();
 #endif
+  ctl_device_on();  // Power on device
   ble_usart_init();
-  i2c_slave_init_irq();
+  // set GPIO for control device
+  gpio_mode_setup(BTN_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLDOWN,
+                  GPIO2 | GPIO3 | GPIO5 | GPIO12);
+  gpio_mode_setup(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLDOWN, GPIO11);
+#if 1
+  ctl_device_c_power_off();
+  ctl_device_up_off();
+  ctl_device_down_off();
+  ctl_device_ok_off();
+#else
+  ctl_device_c_power_on();
+  ctl_device_up_on();
+  ctl_device_down_on();
+  ctl_device_ok_on();
+#endif
+  // i2c_slave_init_irq();
+
+  // rtt_log_init();
 }
 
 void setReboot(void) {
   ble_usart_irq_set();
-  i2c_slave_init_irq();
+  // i2c_slave_init_irq();
 }
 
 void setupApp(void) {
@@ -186,11 +200,8 @@ void setupApp(void) {
   gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_PULLUP, GPIO10);
   gpio_set_af(GPIOA, GPIO_AF10, GPIO10);
 
-  // change oled refresh frequency
-  oledUpdateClk();
-
   // master i2c init
-  vMI2CDRV_Init();
+  // vMI2CDRV_Init();
 }
 
 #define MPU_RASR_SIZE_32B (0x04UL << MPU_RASR_SIZE_LSB)

@@ -32,14 +32,11 @@
 #include "u2f.h"
 #endif
 #include "layout2.h"
-#include "memory.h"
 #include "si2c.h"
-#include "supervise.h"
 #include "sys.h"
 #include "usb.h"
-#include "util.h"
-
 #include "usb21_standard.h"
+#include "util.h"
 #include "webusb.h"
 #include "winusb.h"
 
@@ -73,12 +70,12 @@
 #endif
 
 #define USB_STRINGS                                 \
-  X(MANUFACTURER, "ByteForge")                      \
-  X(PRODUCT, "ONEKEY")                              \
+  X(MANUFACTURER, "SatoshiLabs")                    \
+  X(PRODUCT, "TREZOR")                              \
   X(SERIAL_NUMBER, config_uuid_str)                 \
-  X(INTERFACE_MAIN, "ONEKEY Interface")             \
-  X(INTERFACE_DEBUG, "ONEKEY Debug Link Interface") \
-  X(INTERFACE_U2F, "ONEKEY U2F Interface")
+  X(INTERFACE_MAIN, "TREZOR Interface")             \
+  X(INTERFACE_DEBUG, "TREZOR Debug Link Interface") \
+  X(INTERFACE_U2F, "TREZOR U2F Interface")
 
 #define X(name, value) USB_STRING_##name,
 enum {
@@ -333,7 +330,6 @@ static void main_rx_callback(usbd_device *dev, uint8_t ep) {
     memcpy(buf, packet_buf, 64);
     host_channel = CHANNEL_SLAVE;
   }
-  timer_sleep_start_reset();
   debugLog(0, "", "main_rx_callback");
   if (!tiny) {
     msg_read(buf, 64);
@@ -414,39 +410,25 @@ void usbInit(void) {
 
 static void i2c_slave_poll(void) {
   uint32_t total_len, len;
-  while ((total_len = fifo_lockdata_len(&i2c_fifo_in)) > 0) {
+  if (i2c_recv_done) {
+    i2c_recv_done = false;
     memset(packet_buf, 0x00, sizeof(packet_buf));
-    len = total_len > 64 ? 64 : total_len;
-    fifo_read_lock(&i2c_fifo_in, packet_buf, len);
-    main_rx_callback(NULL, 0);
+    fifo_read_peek(&i2c_fifo_in, packet_buf, 1);
+    if (packet_buf[0] == '?') {  // trezor command
+      while (1) {
+        total_len = fifo_lockdata_len(&i2c_fifo_in);
+        if (total_len == 0) break;
+        len = total_len > 64 ? 64 : total_len;
+        fifo_read_lock(&i2c_fifo_in, packet_buf, len);
+        main_rx_callback(NULL, 0);
+      }
+    } else {  // apdu command
+    }
   }
 }
 void usbPoll(void) {
   static const uint8_t *data;
-
-  bool reset = false;
-
-  static bool usb_status_bak = false;
-
-  if (usb_connect_status && !usb_status_bak) {
-    usb_status_bak = true;
-    if (config_hasPin() && session_isUnlocked()) {
-      reset = true;
-    }
-  } else if (!usb_connect_status && usb_status_bak) {
-    usb_status_bak = false;
-    if (config_hasPin() && session_isUnlocked()) {
-      reset = true;
-    }
-  }
-  if (reset) {
-    svc_system_privileged();
-    vector_table_t *ivt = (vector_table_t *)FLASH_PTR(FLASH_APP_START);
-    __asm__ volatile("msr msp, %0" ::"r"(ivt->initial_sp_value));
-    __asm__ volatile("b reset_handler");
-  }
-
-  i2c_slave_poll();
+  // i2c_slave_poll();
   if (usbd_dev == NULL) {
     return;
   }

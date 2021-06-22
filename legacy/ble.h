@@ -6,13 +6,20 @@
 #include <string.h>
 
 #define BLE_NAME_LEN 0x12
-#define BLE_ADV_OFF 0x00
-#define BLE_ADV_ON 0x01
-#define BLE_ADV_ON_TEMP 0x05
-#define BLE_ADV_OFF_TEMP 0x06
+#define CTL_DEVICE_CANCEL 0x01
+#define CTL_DEVICE_UP 0x02
+#define CTL_DEVICE_DOWN 0x03
+#define CTL_DEVICE_OK 0x04
+#define CTL_DEVICE_POWER 0x05
 
-#define BUTTON_PRESS_BLE_ON 0x01
-#define BUTTON_PRESS_BLE_OFF 0x02
+#define CANCEL_PRESS 0x06
+#define CACEL_LIFT 0x07
+#define UP_PRESS 0x08
+#define UP_LIFT 0x09
+#define DOWN_PRESS 0x0a
+#define DOWN_LIFT 0x0b
+#define OK_PRESS 0x0c
+#define OK_LIFT 0x0d
 
 enum {
   BLE_CMD_CONNECT_STATE = 0x01,
@@ -40,6 +47,7 @@ char *ble_get_name(void);
 char *ble_get_ver(void);
 bool ble_switch_state(void);
 void ble_set_switch(bool flag);
+void ctl_device(void);
 bool ble_get_switch(void);
 void change_ble_sta(uint8_t mode);
 #else

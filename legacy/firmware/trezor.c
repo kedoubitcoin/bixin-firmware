@@ -18,6 +18,7 @@
  */
 
 #include "trezor.h"
+
 #include "bitmaps.h"
 #include "bl_check.h"
 #include "buttons.h"
@@ -28,7 +29,6 @@
 #include "layout2.h"
 #include "memzero.h"
 #include "oled.h"
-#include "protect.h"
 #include "rng.h"
 #include "setup.h"
 #include "timer.h"
@@ -36,6 +36,7 @@
 #include "util.h"
 #if !EMULATOR
 #include <libopencm3/stm32/desig.h>
+
 #include "ble.h"
 #include "otp.h"
 #include "sys.h"
@@ -55,9 +56,9 @@ void check_lock_screen(void) {
 
   // button held for long enough (2 seconds)
   if (layoutLast == layoutHome && button.NoDown >= 285000 * 2) {
-    layoutDialogAdapter(&bmp_icon_question, _("Cancel"), _("Lock Device"), NULL,
-                        _("Do you really want to"), _("lock your Trezor?"),
-                        NULL, NULL, NULL, NULL);
+    layoutDialog(&bmp_icon_question, _("Cancel"), _("Lock Device"), NULL,
+                 _("Do you really want to"), _("lock your Trezor?"), NULL, NULL,
+                 NULL, NULL);
 
     // wait until NoButton is released
     usbTiny(1);
@@ -94,21 +95,6 @@ void check_lock_screen(void) {
   }
 }
 
-#if !EMULATOR
-
-void auto_poweroff_timer(void) {
-  if (config_getAutoLockDelayMs() == 0) return;
-  if (timer_get_sleep_count() >= config_getAutoLockDelayMs()) {
-    if (sys_nfcState() || sys_usbState()) {
-      // do nothing when usb inserted
-      timer_sleep_start_reset();
-    } else {
-      shutdown();
-    }
-  }
-}
-#endif
-
 static void collect_hw_entropy(bool privileged) {
 #if EMULATOR
   (void)privileged;
@@ -135,26 +121,24 @@ static void collect_hw_entropy(bool privileged) {
 }
 
 int main(void) {
-#ifndef APPVER
+#if 0
   setup();
   __stack_chk_guard = random32();  // this supports compiler provided
                                    // unpredictable stack protection checks
-  oledInit();
+  // oledInit();
 #else
-  check_bootloader(true);
+  // check_bootloader();
   setupApp();
-  ble_reset();
+  // ble_reset();
 #if !EMULATOR
   register_timer("button", timer1s / 2, buttonsTimer);
-  register_timer("charge_dis", timer1s, chargeDisTimer);
-  register_timer("poweroff", timer1s, auto_poweroff_timer);
 #endif
   __stack_chk_guard = random32();  // this supports compiler provided
                                    // unpredictable stack protection checks
 #endif
 
-  drbg_init();
-
+  // drbg_init();
+#if 1
   if (!is_mode_unprivileged()) {
     collect_hw_entropy(true);
     timer_init();
@@ -165,6 +149,7 @@ int main(void) {
   } else {
     collect_hw_entropy(false);
   }
+#endif
 
 #if DEBUG_LINK
   oledSetDebugLink(1);
@@ -173,13 +158,15 @@ int main(void) {
 #endif
 #endif
 
-  config_init();
-  layoutHome();
-  usbInit();
+  // config_init();
+  // layoutHome();
+  // usbInit();
 
+  ble_ctl_onoff();
   for (;;) {
-    usbPoll();
-    layoutHomeInfo();
+    ctl_device();
+    // usbPoll();
+    // layoutHomeInfo();
   }
   return 0;
 }

@@ -17,29 +17,27 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "config.h"
+
 #include <libopencm3/stm32/flash.h>
 #include <stdint.h>
 #include <string.h>
-
-#include "messages-common.pb.h"
-#include "messages.pb.h"
 
 #include "aes/aes.h"
 #include "bip32.h"
 #include "bip39.h"
 #include "ble.h"
 #include "common.h"
-#include "config.h"
 #include "curves.h"
 #include "debug.h"
-#include "font.h"
 #include "fsm.h"
 #include "gettext.h"
 #include "hmac.h"
 #include "layout2.h"
 #include "memory.h"
 #include "memzero.h"
-#include "menu_list.h"
+#include "messages-common.pb.h"
+#include "messages.pb.h"
 #include "mi2c.h"
 #include "pbkdf2.h"
 #include "protect.h"
@@ -47,13 +45,13 @@
 #include "se_chip.h"
 #include "sha2.h"
 #include "storage.h"
-#include "storage_ex.h"
 #include "supervise.h"
 #include "timer.h"
 #include "trezor.h"
 #include "u2f.h"
 #include "usb.h"
 #include "util.h"
+#include "utxo_cache.h"
 
 /* Magic constants to check validity of storage block for storage versions 1
  * to 10. */
@@ -67,60 +65,57 @@ static const uint32_t META_MAGIC_V10 = 0xFFFFFFFF;
 
 #define APP (0x01 << 8)
 
+// this flag indicate key-value always in st flash
+#define ST_FLASH (0x02 << 8)
+
 #define FLAG_PUBLIC_SHIFTED (FLAG_PUBLIC << 8)
 #define FLAGS_WRITE_SHIFTED (FLAGS_WRITE << 8)
 
-// clang-format off
-#define KEY_UUID (0 | APP | FLAG_PUBLIC_SHIFTED)                        // bytes(12)
-#define KEY_VERSION (1 | APP)                                           // uint32
-#define KEY_MNEMONIC (2 | APP)                                          // string(241)
-#define KEY_LANGUAGE (3 | APP | FLAG_PUBLIC_SHIFTED)                    // string(17)
-#define KEY_LABEL (4 | APP | FLAG_PUBLIC_SHIFTED)                       // string(33)
-#define KEY_PASSPHRASE_PROTECTION (5 | APP | FLAG_PUBLIC_SHIFTED)       // bool
-#define KEY_HOMESCREEN (6 | APP | FLAG_PUBLIC_SHIFTED)                  // bytes(1024)
-#define KEY_NEEDS_BACKUP (7 | APP)                                      // bool
-#define KEY_FLAGS (8 | APP)                                             // uint32
-#define KEY_U2F_COUNTER (9 | APP | FLAGS_WRITE_SHIFTED)                 // uint32
-#define KEY_UNFINISHED_BACKUP (11 | APP)                                // bool
-#define KEY_AUTO_LOCK_DELAY_MS (12 | APP | FLAG_PUBLIC_SHIFTED)         // uint32
-#define KEY_NO_BACKUP (13 | APP)                                        // bool
-#define KEY_INITIALIZED (14 | APP | FLAG_PUBLIC_SHIFTED)                // uint32
-#define KEY_NODE (15 | APP)                                             // node
-#define KEY_IMPORTED (16 | APP)                                         // bool
-#define KEY_U2F_ROOT (17 | APP | FLAG_PUBLIC_SHIFTED)                   // node
-#define KEY_SEEDS (18 | APP)                                            // bytes
-#define KEY_SEEDSFLAG (19 | APP | FLAG_PUBLIC_SHIFTED)                  // uint32
-//#define KEY_PIN (20| APP_PIN )                                        // uint32
-//#define KEY_PINFLAG (21| APP_PIN )                                    // uint32
-//#define KEY_VERIFYPIN (22| APP_PIN)                                   // uint32
+#define KEY_UUID (0 | APP | FLAG_PUBLIC_SHIFTED)      // bytes(12)
+#define KEY_VERSION (1 | APP)                         // uint32
+#define KEY_MNEMONIC (2 | APP)                        // string(241)
+#define KEY_LANGUAGE (3 | APP | FLAG_PUBLIC_SHIFTED)  // string(17)
+#define KEY_LABEL (4 | APP | FLAG_PUBLIC_SHIFTED)     // string(33)
+#define KEY_PASSPHRASE_PROTECTION (5 | APP | FLAG_PUBLIC_SHIFTED)  // bool
+#define KEY_HOMESCREEN (6 | APP | FLAG_PUBLIC_SHIFTED)   // bytes(1024)
+#define KEY_NEEDS_BACKUP (7 | APP)                       // bool
+#define KEY_FLAGS (8 | APP)                              // uint32
+#define KEY_U2F_COUNTER (9 | APP | FLAGS_WRITE_SHIFTED)  // uint32
+#define KEY_UNFINISHED_BACKUP (11 | APP)                 // bool
+#define KEY_AUTO_LOCK_DELAY_MS \
+  (12 | APP | ST_FLASH | FLAG_PUBLIC_SHIFTED)             // uint32
+#define KEY_NO_BACKUP (13 | APP)                          // bool
+#define KEY_INITIALIZED (14 | APP | FLAG_PUBLIC_SHIFTED)  // uint31
+#define KEY_NODE (15 | APP)                               // node
+#define KEY_IMPORTED (16 | APP)                           // bool
+#define KEY_U2F_ROOT (17 | APP | FLAG_PUBLIC_SHIFTED)     // node
+#define KEY_SEEDS (18 | APP)                              // bytes
+#define KEY_SEEDSFLAG (19 | APP | FLAG_PUBLIC_SHIFTED)    // uint32
+//#define KEY_PIN (20| APP_PIN )      // uint32
+//#define KEY_PINFLAG (21| APP_PIN )      // uint32
+//#define KEY_VERIFYPIN (22| APP_PIN)      // uint32
 
-#define KEY_TRANSBLEMODE (23 | APP | FLAG_PUBLIC_SHIFTED)               // bool
-#define KEY_FREEPAYPINFLAG (24 | APP)                                   // bool
-#define KEY_SEFLAG (25 | APP | FLAG_PUBLIC_SHIFTED)                     // bool
-//#define MNEMONIC_INDEX_TOSEED(26)
-#define KEY_RESET (27 | APP)                                            // bool
-#define KEY_FREEPAYCONFIRMFLAG (28 | APP)                               // bool
-#define KEY_FREEPAYMONEYLIMT (29 | APP)                                 // uint64
-#define KEY_FREEPAYPTIMES (30 | APP)                                    // uint32
+#define KEY_TRANSBLEMODE (23 | APP | FLAG_PUBLIC_SHIFTED)       // bool
+#define KEY_FREEPAYPINFLAG (24 | APP)                           // bool
+#define KEY_SEFLAG (25 | APP | ST_FLASH | FLAG_PUBLIC_SHIFTED)  // bool
+//#define MNEMONIC_INDEX_TOSEED               (26)
+#define KEY_RESET (27 | APP)               // bool
+#define KEY_FREEPAYCONFIRMFLAG (28 | APP)  // bool
+#define KEY_FREEPAYMONEYLIMT (29 | APP)    // uint64
+#define KEY_FREEPAYPTIMES (30 | APP)       // uint32
 
-#define KEY_SE_SESSIONKEY  (31 | APP | FLAG_PUBLIC_SHIFTED)             // bytes(16)
-#define KEY_DEVICE_STATE (32 | APP | FLAG_PUBLIC_SHIFTED)               // uint32
-#define KEY_SEED_PASSPHRASE (33 | APP)                                  // string
-#define KEY_SEED_ST (34 | APP)                                          // string
-#define KEY_ST_SEED_EXCHANGE (35 | APP)                                 // bytes, only used in se
+#define KEY_SE_SESSIONKEY \
+  (31 | APP | ST_FLASH | FLAG_PUBLIC_SHIFTED)  // bytes(16)
+#define KEY_DEVICE_STATE (32 | APP | ST_FLASH | FLAG_PUBLIC_SHIFTED)  // uint32
+#define KEY_SEED_PASSPHRASE (33 | APP)                                // string
+#define KEY_SEED_ST (34 | APP)                                        // string
 
-#define KEY_MNEMONICS_IMPORTED (36 | APP | FLAG_PUBLIC_SHIFTED)         // bool
-#define KEY_SLEEP_DELAY_MS (37 | APP | FLAG_PUBLIC_SHIFTED)             // uint32
-
-#define KEY_DEBUG_LINK_PIN (255 | APP | FLAG_PUBLIC_SHIFTED)            // string(10)
-// clang-format on
+#define KEY_DEBUG_LINK_PIN (255 | APP | FLAG_PUBLIC_SHIFTED)  // string(10)
 
 #define MAX_SESSIONS_COUNT 10
 
 // The PIN value corresponding to an empty PIN.
 static const uint32_t PIN_EMPTY = 1;
-
-static secbool se_unlocked = secfalse;
 
 static uint32_t config_uuid[UUID_SIZE / sizeof(uint32_t)];
 _Static_assert(sizeof(config_uuid) == UUID_SIZE, "config_uuid has wrong size");
@@ -180,17 +175,10 @@ static Session *activeSessionCache;
 
 static uint32_t sessionUseCounter = 0;
 
-#if !EMULATOR
-#define autoLockDelayMsDefault (30 * 60 * 1000U)  // 30 minutes
-#else
 #define autoLockDelayMsDefault (10 * 60 * 1000U)  // 10 minutes
-#endif
-#define sleepDelayMsDefault (5 * 60 * 1000U)  // 5 minutes
 
 static secbool autoLockDelayMsCached = secfalse;
-static secbool sleepDelayMsCached = secfalse;
 static uint32_t autoLockDelayMs = autoLockDelayMsDefault;
-static uint32_t autoSleepDelayMs = sleepDelayMsDefault;
 
 static uint32_t deviceState = 0;
 
@@ -217,6 +205,11 @@ static uint32_t pin_to_int(const char *pin) {
 }
 
 static secbool config_set_bool(uint16_t key, bool value) {
+  if (key == KEY_INITIALIZED) {
+    if (g_bSelectSEFlag) {
+      key = KEY_INITIALIZED & (~FLAG_PUBLIC_SHIFTED);
+    }
+  }
   if (value) {
     return storage_set(key, &TRUE_BYTE, sizeof(TRUE_BYTE));
   } else {
@@ -400,7 +393,7 @@ static secbool config_upgrade_v10(void) {
     }
   }
   if (config.has_mnemonic) {
-    config_setMnemonic(config.mnemonic, false);
+    config_setMnemonic(config.mnemonic);
   }
   if (config.has_passphrase_protection) {
     config_setPassphraseProtection(config.passphrase_protection);
@@ -443,7 +436,6 @@ static secbool config_upgrade_v10(void) {
 }
 
 void config_init(void) {
-  char *se_version = NULL;
   char oldTiny = usbTiny(1);
 
   config_upgrade_v10();
@@ -452,44 +444,17 @@ void config_init(void) {
   memzero(HW_ENTROPY_DATA, sizeof(HW_ENTROPY_DATA));
 
   // get whether use se flag
-  for (uint8_t i = 0; i < 5; i++) {
-    se_version = se_get_version();
-    if (se_version == NULL) {
-      se_power_off();
-      delay_ms(100);
-      se_power_on();
-      delay_ms(100);
-    } else {
-      break;
-    }
-  }
-  if (se_version) {
-    if (strcmp(se_version, "1.1.0.0") > 0) {
-      g_bSelectSEFlag = true;
-    }
-  } else {
-    layoutDialog(&bmp_icon_error, NULL, NULL, NULL, _("Get SE version"),
-                 _("failed."), NULL, NULL, _("Contact our support."), NULL);
-    delay_ms(1000);
-    shutdown();
-  }
-
+  g_bSelectSEFlag = config_getWhetherUseSE();
   config_getLanguage(config_language, sizeof(config_language));
-
-  // imported xprv is not supported anymore so we set initialized to false
-  // if no mnemonic is present
-  if (config_isInitialized() && !config_hasMnemonic()) {
-    config_set_bool(KEY_INITIALIZED, false);
-  }
 
   // Auto-unlock storage if no PIN is set.
   if (storage_is_unlocked() == secfalse && storage_has_pin() == secfalse) {
     storage_unlock(PIN_EMPTY, NULL);
   }
+
 #if !EMULATOR
   se_sync_session_key();
 #endif
-
   uint16_t len = 0;
   // If UUID is not set, then the config is uninitialized.
   if (sectrue !=
@@ -504,7 +469,7 @@ void config_init(void) {
 
   session_clear(false);
 #if !EMULATOR
-  user_data_init();
+  utxo_cache_init();
 #endif
   usbTiny(oldTiny);
 }
@@ -526,16 +491,10 @@ void session_clearCache(Session *session) {
   session->seedCached = false;
 }
 
-void config_lockDevice(void) {
-  if (g_bSelectSEFlag) {
-    se_unlocked = secfalse;
-  } else {
-    storage_lock();
-  }
-}
+void config_lockDevice(void) { storage_lock(); }
 
 static void get_u2froot_callback(uint32_t iter, uint32_t total) {
-  layoutProgressAdapter(_("Updating"), 1000 * iter / total);
+  layoutProgress_zh(ui_prompt_updating[ui_language], 1000 * iter / total);
 }
 
 static void config_compute_u2froot(const char *mnemonic,
@@ -604,7 +563,7 @@ void config_loadDevice(const LoadDevice *msg) {
 
   if (msg->mnemonics_count) {
     storage_delete(KEY_NODE);
-    config_setMnemonic(msg->mnemonics[0], true);
+    config_setMnemonic(msg->mnemonics[0]);
   }
 
   if (msg->has_language) {
@@ -628,20 +587,6 @@ void config_loadDevice(const LoadDevice *msg) {
 
 #endif
 
-void config_loadDevice_ex(const BixinLoadDevice *msg) {
-  session_clear(false);
-  config_set_bool(KEY_MNEMONICS_IMPORTED, true);
-
-  config_setMnemonic(msg->mnemonics, true);
-  config_set_bool(KEY_INITIALIZED, true);
-
-  if (msg->has_language) {
-    config_setLanguage(msg->language);
-  }
-
-  config_setLabel(msg->has_label ? msg->label : "");
-}
-
 void config_setLabel(const char *label) {
   if (label == NULL || label[0] == '\0') {
     storage_delete(KEY_LABEL);
@@ -664,7 +609,6 @@ void config_setLanguage(const char *lang) {
   }
 
   storage_set(KEY_LANGUAGE, lang, strnlen(lang, MAX_LANGUAGE_LEN));
-  font_set(ui_language ? "dingmao_9x9" : "english");
 }
 
 void config_setPassphraseProtection(bool passphrase_protection) {
@@ -686,77 +630,67 @@ void config_setHomescreen(const uint8_t *data, uint32_t size) {
 
 static void get_root_node_callback(uint32_t iter, uint32_t total) {
   usbSleep(1);
-  layoutProgressAdapter(_("Waking up"), 1000 * iter / total);
+  layoutProgress_zh(ui_prompt_wakingup[ui_language], 1000 * iter / total);
 }
 
 const uint8_t *config_getSeed(void) {
-  if (activeSessionCache == NULL) {
-    fsm_sendFailure(FailureType_Failure_InvalidSession, "Invalid session");
-    return NULL;
-  }
-
   // root node is properly cached
-  if (activeSessionCache->seedCached == sectrue) {
+  if ((activeSessionCache != NULL) &&
+      (activeSessionCache->seedCached == sectrue)) {
     return activeSessionCache->seed;
   }
-
-  // if storage has mnemonic, convert it to node and use it
-  char mnemonic[MAX_MNEMONIC_LEN + 1] = {0};
-  if (config_getMnemonic(mnemonic, sizeof(mnemonic))) {
+  if (!g_bSelectSEFlag) {
+    // if storage has mnemonic, convert it to node and use it
+    char mnemonic[MAX_MNEMONIC_LEN + 1] = {0};
+    if (config_getMnemonic(mnemonic, sizeof(mnemonic))) {
+      char passphrase[MAX_PASSPHRASE_LEN + 1] = {0};
+      if (!protectPassphrase(passphrase)) {
+        memzero(mnemonic, sizeof(mnemonic));
+        memzero(passphrase, sizeof(passphrase));
+        return NULL;
+      }
+      // if storage was not imported (i.e. it was properly generated or
+      // recovered)
+      bool imported = false;
+      config_get_bool(KEY_IMPORTED, &imported);
+      if (!imported) {
+        // test whether mnemonic is a valid BIP-0039 mnemonic
+        if (!mnemonic_check(mnemonic)) {
+          // and if not then halt the device
+          error_shutdown(_("Storage failure"), _("detected."), NULL, NULL);
+        }
+      }
+      char oldTiny = usbTiny(1);
+      if (activeSessionCache == NULL) {
+        // this should not happen if the Host behaves and sends Initialize first
+        session_startSession(NULL);
+      }
+      mnemonic_to_seed(mnemonic, passphrase, activeSessionCache->seed,
+                       get_root_node_callback);  // BIP-0039
+      memzero(mnemonic, sizeof(mnemonic));
+      memzero(passphrase, sizeof(passphrase));
+      usbTiny(oldTiny);
+      activeSessionCache->seedCached = sectrue;
+      return activeSessionCache->seed;
+    } else {
+      fsm_sendFailure(FailureType_Failure_NotInitialized,
+                      _("Device not initialized"));
+    }
+  } else {
     char passphrase[MAX_PASSPHRASE_LEN + 1] = {0};
     if (!protectPassphrase(passphrase)) {
-      memzero(mnemonic, sizeof(mnemonic));
       memzero(passphrase, sizeof(passphrase));
       return NULL;
     }
-    // passphrase is used - confirm on the display
-    if (passphrase[0] != 0) {
-      layoutDialogSwipe(&bmp_icon_question, _("Cancel"), _("Confirm"), NULL,
-                        _("Access hidden wallet?"), NULL,
-                        _("Next screen will show"), _("the passphrase!"), NULL,
-                        NULL);
-      if (!protectButton(ButtonRequestType_ButtonRequest_Other, false)) {
-        memzero(mnemonic, sizeof(mnemonic));
-        memzero(passphrase, sizeof(passphrase));
-        fsm_sendFailure(FailureType_Failure_ActionCancelled,
-                        _("Passphrase dismissed"));
-        layoutHome();
-        return NULL;
-      }
-      layoutShowPassphrase(passphrase);
-      if (!protectButton(ButtonRequestType_ButtonRequest_Other, false)) {
-        memzero(mnemonic, sizeof(mnemonic));
-        memzero(passphrase, sizeof(passphrase));
-        fsm_sendFailure(FailureType_Failure_ActionCancelled,
-                        _("Passphrase dismissed"));
-        layoutHome();
-        return NULL;
-      }
+    if (activeSessionCache == NULL) {
+      // this should not happen if the Host behaves and sends Initialize first
+      session_startSession(NULL);
     }
-    // if storage was not imported (i.e. it was properly generated or
-    // recovered)
-    bool imported = false;
-    config_get_bool(KEY_IMPORTED, &imported);
-    if (!imported) {
-      // test whether mnemonic is a valid BIP-0039 mnemonic
-      if (!mnemonic_check(mnemonic)) {
-        // and if not then halt the device
-        error_shutdown(_("Storage failure"), _("detected."), NULL, NULL);
-      }
-    }
-    char oldTiny = usbTiny(1);
-    mnemonic_to_seed(mnemonic, passphrase, activeSessionCache->seed,
+    mnemonic_to_seed(NULL, passphrase, activeSessionCache->seed,
                      get_root_node_callback);  // BIP-0039
-    memzero(mnemonic, sizeof(mnemonic));
-    memzero(passphrase, sizeof(passphrase));
-    usbTiny(oldTiny);
     activeSessionCache->seedCached = sectrue;
     return activeSessionCache->seed;
-  } else {
-    fsm_sendFailure(FailureType_Failure_NotInitialized,
-                    _("Device not initialized"));
   }
-
   return NULL;
 }
 
@@ -799,28 +733,18 @@ bool config_getLanguage(char *dest, uint16_t dest_size) {
   if (sectrue == config_get_string(KEY_LANGUAGE, dest, dest_size)) {
     if (strcmp(dest, "en-US") == 0 || strcmp(dest, "english") == 0) {
       ui_language = 0;
+      return true;
     } else if (strcmp(dest, "zh-CN") == 0 || strcmp(dest, "chinese") == 0) {
       ui_language = 1;
+      return true;
     }
-  } else {
-    ui_language = 0;
-    strcpy(dest, "en-US");
-    dest_size = 5;
   }
-
-  font_set(ui_language ? "dingmao_9x9" : "english");
+  ui_language = 0;
+  strcpy(dest, "en-US");
+  dest_size = 5;
 
   return true;
 }
-
-bool config_isLanguageSet(void) {
-  char language[MAX_LANGUAGE_LEN];
-  if (sectrue == config_get_string(KEY_LANGUAGE, language, sizeof(language))) {
-    return true;
-  }
-  return false;
-}
-
 bool config_getHomescreen(uint8_t *dest, uint16_t dest_size) {
   uint16_t len = 0;
   secbool ret = storage_get(KEY_HOMESCREEN, dest, dest_size, &len);
@@ -830,40 +754,28 @@ bool config_getHomescreen(uint8_t *dest, uint16_t dest_size) {
   return true;
 }
 
-bool config_setMnemonic(const char *mnemonic, bool import) {
+bool config_setMnemonic(const char *mnemonic) {
   if (mnemonic == NULL) {
     return false;
-  }
-
-  if (g_bSelectSEFlag) {
-    se_setNeedsBackup(false);
-    if (import) {
-      uint8_t seed[64] = {0};
-      uint32_t strength = 0;
-      (void)strength;
-      random_buffer(seed, sizeof(seed));
-      strength = (mnemonic_to_bits(mnemonic, seed) / 11) * 8 * 4 / 3;
-      se_setSeedStrength(strength);
-      return se_importSeed(seed);
-    }
   }
 
   if (sectrue != storage_set(KEY_MNEMONIC, mnemonic,
                              strnlen(mnemonic, MAX_MNEMONIC_LEN))) {
     return false;
   }
+  if (!g_bSelectSEFlag) {
+    StorageHDNode u2fNode = {0};
+    memzero(&u2fNode, sizeof(u2fNode));
+    config_compute_u2froot(mnemonic, &u2fNode);
+    secbool ret = storage_set(KEY_U2F_ROOT, &u2fNode, sizeof(u2fNode));
+    memzero(&u2fNode, sizeof(u2fNode));
 
-  StorageHDNode u2fNode = {0};
-  memzero(&u2fNode, sizeof(u2fNode));
-  config_compute_u2froot(mnemonic, &u2fNode);
-  secbool ret = storage_set(KEY_U2F_ROOT, &u2fNode, sizeof(u2fNode));
-  memzero(&u2fNode, sizeof(u2fNode));
-
-  if (sectrue != ret) {
-    storage_delete(KEY_MNEMONIC);
-    return false;
+    if (sectrue != ret) {
+      storage_delete(KEY_MNEMONIC);
+      return false;
+    }
+    config_set_bool(KEY_INITIALIZED, true);
   }
-  config_set_bool(KEY_INITIALIZED, true);
 
   return true;
 }
@@ -913,24 +825,7 @@ bool config_getMnemonicBytes(uint8_t *dest, uint16_t dest_size,
 }
 
 bool config_getMnemonic(char *dest, uint16_t dest_size) {
-  if (g_bSelectSEFlag) {
-    uint8_t seed[64];
-    uint32_t strength = 0;
-    if (!se_getSeedStrength(&strength)) return false;
-    if (!se_export_seed(seed)) return false;
-    const char *mnemonic = mnemonic_from_data(seed, strength / 8);
-    strlcpy(dest, mnemonic, dest_size);
-    return true;
-  } else {
-    return sectrue == config_get_string(KEY_MNEMONIC, dest, dest_size);
-  }
-}
-
-bool config_hasMnemonic(void) {
-  if (g_bSelectSEFlag)
-    return true;
-  else
-    return sectrue == storage_has(KEY_MNEMONIC);
+  return sectrue == config_get_string(KEY_MNEMONIC, dest, dest_size);
 }
 
 /* Check whether mnemonic matches storage. The mnemonic must be
@@ -966,64 +861,38 @@ bool config_containsMnemonic(const char *mnemonic) {
  * a null-terminated string with at most 9 characters.
  */
 bool config_unlock(const char *pin) {
-  if (g_bSelectSEFlag) {
-    if (se_verifyPin((pin_to_int(pin)))) {
-      se_unlocked = sectrue;
-      return true;
-    } else {
-      se_unlocked = secfalse;
-      return false;
-    }
-
-  } else {
-    char oldTiny = usbTiny(1);
-    secbool ret = storage_unlock(pin_to_int(pin), NULL);
-    usbTiny(oldTiny);
-    return sectrue == ret;
-  }
+  char oldTiny = usbTiny(1);
+  secbool ret = storage_unlock(pin_to_int(pin), NULL);
+  usbTiny(oldTiny);
+  return sectrue == ret;
 }
 
-bool config_hasPin(void) {
-  if (g_bSelectSEFlag) {
-    return se_hasPin();
-  } else {
-    return sectrue == storage_has_pin();
-  }
-}
+bool config_hasPin(void) { return sectrue == storage_has_pin(); }
 
 bool config_changePin(const char *old_pin, const char *new_pin) {
   uint32_t new_pin_int = pin_to_int(new_pin);
   if (new_pin_int == 0) {
     return false;
   }
-  if (g_bSelectSEFlag) {
-    if (se_changePin(pin_to_int(old_pin), new_pin_int)) {
-      se_unlocked = sectrue;
-      return true;
-    } else {
-      se_unlocked = secfalse;
-      return false;
-    }
-  } else {
-    char oldTiny = usbTiny(1);
-    secbool ret =
-        storage_change_pin(pin_to_int(old_pin), new_pin_int, NULL, NULL);
-    usbTiny(oldTiny);
+
+  char oldTiny = usbTiny(1);
+  secbool ret =
+      storage_change_pin(pin_to_int(old_pin), new_pin_int, NULL, NULL);
+  usbTiny(oldTiny);
 
 #if DEBUG_LINK
-    if (sectrue == ret) {
-      if (new_pin_int != PIN_EMPTY) {
-        storage_set(KEY_DEBUG_LINK_PIN, new_pin, strnlen(new_pin, MAX_PIN_LEN));
-      } else {
-        storage_delete(KEY_DEBUG_LINK_PIN);
-      }
+  if (sectrue == ret) {
+    if (new_pin_int != PIN_EMPTY) {
+      storage_set(KEY_DEBUG_LINK_PIN, new_pin, strnlen(new_pin, MAX_PIN_LEN));
+    } else {
+      storage_delete(KEY_DEBUG_LINK_PIN);
     }
+  }
 #endif
 
-    memzero(&new_pin_int, sizeof(new_pin_int));
+  memzero(&new_pin_int, sizeof(new_pin_int));
 
-    return sectrue == ret;
-  }
+  return sectrue == ret;
 }
 
 #if DEBUG_LINK
@@ -1096,32 +965,16 @@ uint8_t *session_startSession(const uint8_t *received_session_id) {
   return activeSessionCache->id;
 }
 
-void session_endCurrentSession(void) {
-  if (activeSessionCache == NULL) return;
-  session_clearCache(activeSessionCache);
-  activeSessionCache = NULL;
-}
-
-bool session_isUnlocked(void) {
-  if (g_bSelectSEFlag) {
-    if (se_hasPin()) {
-      return sectrue == se_unlocked;
-    } else {
-      return true;
-    }
-
-  } else {
-    return sectrue == storage_is_unlocked();
-  }
-}
+bool session_isUnlocked(void) { return sectrue == storage_is_unlocked(); }
 
 bool config_isInitialized(void) {
   bool initialized = false;
+  uint16_t keyinitalized;
+  keyinitalized = KEY_INITIALIZED;
   if (g_bSelectSEFlag) {
-    initialized = se_isInitialized();
-  } else {
-    config_get_bool(KEY_INITIALIZED, &initialized);
+    keyinitalized = KEY_INITIALIZED & (~FLAG_PUBLIC_SHIFTED);
   }
+  config_get_bool(keyinitalized, &initialized);
   return initialized;
 }
 bool config_isInitializedSeeds(void) {
@@ -1136,12 +989,6 @@ bool config_getImported(bool *imported) {
 
 void config_setImported(bool imported) {
   config_set_bool(KEY_IMPORTED, imported);
-}
-
-bool config_getMnemonicsImported(void) {
-  bool mnemonic_imported = false;
-  config_get_bool(KEY_MNEMONICS_IMPORTED, &mnemonic_imported);
-  return mnemonic_imported;
 }
 
 bool config_getNeedsBackup(bool *needs_backup) {
@@ -1194,24 +1041,21 @@ uint32_t config_getAutoLockDelayMs() {
   if (sectrue == autoLockDelayMsCached) {
     return autoLockDelayMs;
   }
-#if EMULATOR
-  if (sectrue != storage_is_unlocked()) {
-    return autoLockDelayMsDefault;
-  }
-#endif
+
+  //   if (sectrue != storage_is_unlocked()) {
+  //     return autoLockDelayMsDefault;
+  //   }
+
   if (sectrue != config_get_uint32(KEY_AUTO_LOCK_DELAY_MS, &autoLockDelayMs)) {
     autoLockDelayMs = autoLockDelayMsDefault;
-  }
-  if (autoLockDelayMs) {
-    autoLockDelayMs = MAX(autoLockDelayMs, MIN_AUTOLOCK_DELAY_MS);
   }
   autoLockDelayMsCached = sectrue;
   return autoLockDelayMs;
 }
 
 void config_setAutoLockDelayMs(uint32_t auto_lock_delay_ms) {
-  if (auto_lock_delay_ms != 0)
-    auto_lock_delay_ms = MAX(auto_lock_delay_ms, MIN_AUTOLOCK_DELAY_MS);
+  const uint32_t min_delay_ms = 10 * 1000U;  // 10 seconds
+  auto_lock_delay_ms = MAX(auto_lock_delay_ms, min_delay_ms);
   if (sectrue == storage_set(KEY_AUTO_LOCK_DELAY_MS, &auto_lock_delay_ms,
                              sizeof(auto_lock_delay_ms))) {
     autoLockDelayMs = auto_lock_delay_ms;
@@ -1219,39 +1063,22 @@ void config_setAutoLockDelayMs(uint32_t auto_lock_delay_ms) {
   }
 }
 
-uint32_t config_getSleepDelayMs(void) {
-  if (sectrue == sleepDelayMsCached) {
-    return autoSleepDelayMs;
-  }
-
-  if (sectrue != config_get_uint32(KEY_SLEEP_DELAY_MS, &autoSleepDelayMs)) {
-    autoSleepDelayMs = sleepDelayMsDefault;
-  }
-  sleepDelayMsCached = sectrue;
-  return autoSleepDelayMs;
-}
-
-void config_setSleepDelayMs(uint32_t auto_sleep_ms) {
-  if (auto_sleep_ms != 0)
-    auto_sleep_ms = MAX(auto_sleep_ms, MIN_AUTOLOCK_DELAY_MS);
-  if (sectrue ==
-      storage_set(KEY_SLEEP_DELAY_MS, &auto_sleep_ms, sizeof(auto_sleep_ms))) {
-    autoSleepDelayMs = auto_sleep_ms;
-    sleepDelayMsCached = sectrue;
-  }
-}
-
 void config_wipe(void) {
   uint8_t session_key[16];
 
+#if !EMULATOR
   if (g_bSelectSEFlag) {
-    se_reset_storage();
+    se_reset_storage(KEY_RESET);
+    g_bSelectSEFlag = 0;
     config_getSeSessionKey(session_key, sizeof(session_key));
-    se_unlocked = secfalse;
   }
+#endif
 
   char oldTiny = usbTiny(1);
   storage_wipe();
+  if (storage_is_unlocked() != sectrue) {
+    storage_unlock(PIN_EMPTY, NULL);
+  }
   usbTiny(oldTiny);
   random_buffer((uint8_t *)config_uuid, sizeof(config_uuid));
   data2hex(config_uuid, sizeof(config_uuid), config_uuid_str);
@@ -1320,12 +1147,18 @@ void config_setWhetherUseSE(bool flag) {
   }
 }
 
-bool config_getWhetherUseSE(void) { return g_bSelectSEFlag; }
+bool config_getWhetherUseSE(void) {
+  bool flag;
+  return sectrue == config_get_bool(KEY_SEFLAG, &flag);
+}
 
 ExportType config_setSeedsExportFlag(ExportType flag) { return flag; }
 
 bool config_getMessageSE(BixinMessageSE_inputmessage_t *input_msg,
                          BixinOutMessageSE_outmessage_t *get_msg) {
+  if (!g_bSelectSEFlag) {
+    return false;
+  }
   if (false == bMI2CDRV_SendData(input_msg->bytes, input_msg->size)) {
     return false;
   }
@@ -1388,23 +1221,4 @@ bool config_STSeedRestore(void *cipher_data, uint16_t cipher_len,
                           void *plain_data, uint16_t *plain_len) {
   return se_st_seed_de(KEY_SEED_ST, cipher_data, cipher_len, plain_data,
                        plain_len);
-}
-
-bool config_stBackUpEntoryToSe(uint8_t *seed, uint8_t seed_len) {
-  return st_backup_entory_to_se(KEY_ST_SEED_EXCHANGE, seed, seed_len);
-}
-
-bool config_stRestoreEntoryFromSe(uint8_t *seed, uint8_t *seed_len) {
-  return st_restore_entory_from_se(KEY_ST_SEED_EXCHANGE, seed, seed_len);
-}
-
-uint32_t config_getPinFails(void) {
-  uint32_t count = 0;
-  if (g_bSelectSEFlag) {
-    count = se_pinFailedCounter();
-  } else {
-    pin_get_fails(&count);
-  }
-
-  return count;
 }

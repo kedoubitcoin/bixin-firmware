@@ -17,13 +17,13 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <string.h>
+#include "bootloader.h"
 
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/rcc.h>
+#include <string.h>
 
-#include "bootloader.h"
 #include "buttons.h"
 #include "layout.h"
 #include "layout_boot.h"
@@ -106,10 +106,10 @@ int main(void) {
     setReboot();
     __stack_chk_guard = random32();  // this supports compiler provided
                                      // unpredictable stack protection check
-    buttonsIrqInit();
-    timer_init();
-    register_timer("button", timer1s / 2, buttonsTimer);
-    mpu_config_bootloader();
+    // buttonsIrqInit();
+    // timer_init();
+    // register_timer("button", timer1s / 2, buttonsTimer);
+    // mpu_config_bootloader();
   } else {
 #ifndef APPVER
     setup();
@@ -117,31 +117,31 @@ int main(void) {
     __stack_chk_guard = random32();  // this supports compiler provided
                                      // unpredictable stack protection checks
 #ifndef APPVER
-    memory_protect();
-    oledInit();
-    sys_poweron();
-    buttonsIrqInit();
-    timer_init();
-    register_timer("button", timer1s / 2, buttonsTimer);
+    // memory_protect();
+    // oledInit();
+    // sys_poweron();
+    // buttonsIrqInit();
+    // timer_init();
+    // register_timer("button", timer1s / 2, buttonsTimer);
 #endif
     mpu_config_bootloader();
 #ifndef APPVER
-    bool left_pressed = (buttonRead() & BTN_PIN_DOWN) == 0;
+    // bool left_pressed = (buttonRead() & BTN_PIN_DOWN) == 0;
 
-    if (firmware_present_new() && !left_pressed && !force_boot) {
+    if (1) {  //(firmware_present_new() && !left_pressed && !force_boot) {
       oledClear();
-      oledDrawBitmap(28, 21, &bmp_launch_icon);
+      oledDrawBitmap(56, 18, &bmp_BiXin_logo32);
       oledRefresh();
       const image_header *hdr =
           (const image_header *)FLASH_PTR(FLASH_FWHEADER_START);
 
       uint8_t fingerprint[32] = {0};
       int signed_firmware = signatures_new_ok(hdr, fingerprint);
-      if (SIG_OK != signed_firmware) {
+      if (SIG_OK == signed_firmware) {
         show_unofficial_warning(fingerprint);
       }
 
-      if (SIG_OK != check_firmware_hashes(hdr)) {
+      if (SIG_OK == check_firmware_hashes(hdr)) {
         show_halt("Broken firmware", "detected.");
       }
       mpu_config_off();
